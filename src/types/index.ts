@@ -2,16 +2,22 @@ export type TaskStatus =
   | 'idle'
   | 'analyzing'
   | 'planning'
-  | 'modifying'
+  | 'patch_ready'
+  | 'awaiting_approval'
+  | 'applying'
+  | 'applied'
   | 'verifying'
   | 'completed'
+  | 'rejected'
   | 'failed';
 
 export type StageId =
   | 'structure_analysis'
   | 'file_identification'
-  | 'solution_plan'
-  | 'code_modification'
+  | 'context_collection'
+  | 'ai_analysis'
+  | 'patch_generation'
+  | 'approval_and_apply'
   | 'verification'
   | 'summary';
 
@@ -33,23 +39,53 @@ export interface RelevantFile {
   sizeBytes?: number;
 }
 
-export interface SolutionPlan {
-  summary: string;
-  problemExplanation: string;
-  steps: string[];
-  affectedModules: string[];
-  riskAssessment: 'low' | 'medium' | 'high';
-  estimatedComplexity: 'simple' | 'moderate' | 'complex';
+export interface RelevantFileAnalysis {
+  path: string;
+  relevanceReason: string;
+  proposedAction: 'modify' | 'create' | 'inspect' | 'none';
 }
 
-export interface FileChange {
-  path: string;
-  changeType: 'modify' | 'create' | 'delete';
-  oldContent?: string;
-  newContent?: string;
+export interface SolutionPlan {
+  problemUnderstanding: string;
+  rootCauseHypothesis: string;
+  relevantFilesAnalysis: RelevantFileAnalysis[];
+  proposedSolution: string;
+  implementationSteps: string[];
+  potentialRisks: string[];
+  estimatedComplexity: 'simple' | 'moderate' | 'complex';
+  contextSummary?: {
+    filesCount: number;
+    totalBytes: number;
+    approximateTokens: number;
+  };
+  llmProvider?: string;
+  llmModel?: string;
+  llmLatencyMs?: number;
+}
+
+export interface PatchFileChange {
+  filePath: string;
+  originalSection: string;
+  replacementSection: string;
+  reason: string;
+  expectedEffect: string;
   diffHunks: string[];
   linesAdded: number;
   linesRemoved: number;
+  isValid: boolean;
+  validationError?: string;
+}
+
+export interface PatchProposal {
+  id: string;
+  taskId: string;
+  summary: string;
+  changes: PatchFileChange[];
+  createdAt: string;
+  appliedAt?: string;
+  rejectedAt?: string;
+  backupId?: string;
+  modifiedFiles?: string[];
 }
 
 export interface VerificationResult {
@@ -67,6 +103,14 @@ export interface VerificationResult {
     skipped: number;
   };
   ranAt: string;
+}
+
+export interface ExtractedFileContext {
+  path: string;
+  language: string;
+  sizeBytes: number;
+  content: string;
+  isTruncated: boolean;
 }
 
 export interface LogEntry {
@@ -87,9 +131,11 @@ export interface TaskRun {
   currentStageIndex: number;
   stages: TaskStage[];
   relevantFiles: RelevantFile[];
+  extractedContext?: ExtractedFileContext[];
   plan?: SolutionPlan;
-  changes: FileChange[];
+  patchProposal?: PatchProposal;
   verification?: VerificationResult;
+  backupId?: string;
   logs: LogEntry[];
   createdAt: string;
   updatedAt: string;
@@ -145,15 +191,4 @@ export interface SystemHealth {
   hasAnthropicKey: boolean;
   hasGithubToken: boolean;
   timestamp: string;
-}
-
-export interface SystemConfig {
-  aiProvider: 'gemini' | 'openai' | 'anthropic' | 'ollama' | 'mock';
-  geminiApiKey?: string;
-  openaiApiKey?: string;
-  anthropicApiKey?: string;
-  ollamaBaseUrl?: string;
-  githubToken?: string;
-  autoRunVerification: boolean;
-  verificationTimeoutMs: number;
 }

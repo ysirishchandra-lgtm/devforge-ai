@@ -1,8 +1,12 @@
-import { TaskRun, TaskStage, LogEntry, RelevantFile, SolutionPlan, FileChange } from '@/types';
+import { TaskRun, TaskStage, LogEntry, RelevantFile, SolutionPlan, ExtractedFileContext, PatchProposal } from '@/types';
 import { ProjectAnalyzer } from '../analyzer/project-analyzer';
+import { ContextExtractor } from '../analyzer/context-extractor';
+import { LLMProviderFactory } from '../llm/provider-factory';
+import { PatchGenerator } from '../patch/patch-generator';
+import { PatchEngine } from '../patch/patch-engine';
 import { VerificationRunner } from '../verification/test-runner';
 import { AppStore } from '../storage/store';
-import { GitService } from '../git/git-service';
+import { getConfig } from '../config';
 
 export class AgentOrchestrator {
   private static createLog(
@@ -22,7 +26,7 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Run the full DevForge agent pipeline for a task
+   * Stage 1 to 5: Run analysis, reasoning, and generate patch proposal (Awaiting Developer Approval)
    */
   static async runTask(
     taskId: string,
@@ -38,7 +42,6 @@ export class AgentOrchestrator {
       throw new Error(`Repository ${task.repositoryId} not found`);
     }
 
-    // Helper to log and save
     const appendLog = async (
       stageId: TaskStage['id'] | 'system',
       level: LogEntry['level'],
@@ -76,7 +79,7 @@ export class AgentOrchestrator {
       // STAGE 1: Structure Analysis
       await updateStage(0, 'running');
       await appendLog('structure_analysis', 'info', 'Scanning workspace filesystem and analyzing architecture...');
-      
+
       const structure = await ProjectAnalyzer.analyze(repo.localPath);
       await appendLog(
         'structure_analysis',
@@ -85,7 +88,6 @@ export class AgentOrchestrator {
         {
           languages: structure.detectedLanguages,
           frameworks: structure.detectedFrameworks,
-          testCommand: structure.testCommand || 'None detected',
         }
       );
       await updateStage(
@@ -109,102 +111,122 @@ export class AgentOrchestrator {
         await appendLog(
           'file_identification',
           'success',
-          `Identified ${relevantFiles.length} high-probability target files: ${relevantFiles.map((f) => f.path).join(', ')}`
+          `Identified ${relevantFiles.length} candidate files: ${relevantFiles.map((f) => f.path).join(', ')}`
         );
       } else {
         await appendLog(
           'file_identification',
-          'warn',
-          'No direct keyword matches found. Scanning top-level configuration and entrypoints.'
+          'info',
+          'No direct filename matches found. Will provide top-level architecture context.'
         );
       }
       await updateStage(
         1,
         'completed',
-        `Ranked ${relevantFiles.length} target files for modification.`
+        `Ranked ${relevantFiles.length} target files for diagnostic analysis.`
       );
 
-      // STAGE 3: Solution Planning
-      task.status = 'planning';
+      // STAGE 3: Safe Context Collection
       await updateStage(2, 'running');
-      await appendLog('solution_plan', 'info', 'Formulating problem diagnosis and step-by-step resolution plan...');
+      await appendLog('context_collection', 'info', 'Extracting safe source context (filtering secrets, .env files, and binary assets)...');
 
-      const plan: SolutionPlan = {
-        summary: `Plan to address: ${task.prompt}`,
-        problemExplanation: `Based on workspace analysis, the request requires updating targeted logic and verifying runtime correctness without breaking existing contracts.`,
-        steps: [
-          `Inspect context in ${relevantFiles.length > 0 ? relevantFiles[0].path : 'source files'}`,
-          'Draft targeted code patch with clean boundary separation',
-          'Execute verification suite to ensure zero regressions',
-          'Prepare git commit and diff review',
-        ],
-        affectedModules: relevantFiles.map((f) => f.path),
-        riskAssessment: 'low',
-        estimatedComplexity: relevantFiles.length > 2 ? 'moderate' : 'simple',
-      };
+      const extractedContext: ExtractedFileContext[] = await ContextExtractor.extractSafeContext(
+        repo.localPath,
+        relevantFiles,
+        { maxFiles: 6, maxFileBytes: 25 * 1024, maxTotalBytes: 80 * 1024 }
+      );
 
-      task.plan = plan;
-      await appendLog('solution_plan', 'success', 'Solution plan finalized.', plan as unknown as Record<string, unknown>);
-      await updateStage(2, 'completed', 'Solution plan and step sequence ready.');
+      task.extractedContext = extractedContext;
+      const totalContextBytes = extractedContext.reduce((acc, f) => acc + f.content.length, 0);
 
-      // STAGE 4: Code Modification
-      task.status = 'modifying';
+      await appendLog(
+        'context_collection',
+        'success',
+        `Extracted ${extractedContext.length} safe file contexts (${Math.round(totalContextBytes / 1024)} KB total).`
+      );
+      await updateStage(
+        2,
+        'completed',
+        `Collected ${extractedContext.length} safe context files.`
+      );
+
+      // STAGE 4: AI Analysis & LLM Reasoning
+      task.status = 'planning';
       await updateStage(3, 'running');
-      await appendLog('code_modification', 'info', 'Preparing targeted patch preview for affected files...');
 
-      const changes: FileChange[] = relevantFiles.slice(0, 2).map((rf) => {
-        return {
-          path: rf.path,
-          changeType: 'modify',
-          oldContent: `// Existing code in ${rf.path}`,
-          newContent: `// Updated by DevForge Agent for: ${task.prompt}\n// Existing code in ${rf.path}`,
-          diffHunks: [
-            `@@ -1,5 +1,7 @@`,
-            `+ // DevForge Agent: ${task.title}`,
-            `  // Verified change`,
-          ],
-          linesAdded: 2,
-          linesRemoved: 0,
-        };
-      });
+      const provider = LLMProviderFactory.getActiveProvider();
+      await appendLog('ai_analysis', 'info', `Dispatching context to ${provider.name} (${provider.defaultModel})...`);
 
-      task.changes = changes;
-      await appendLog('code_modification', 'success', `Generated code modification patch across ${changes.length} files.`);
-      await updateStage(3, 'completed', `Prepared changes for ${changes.length} files.`);
-
-      // STAGE 5: Verification & Testing
-      task.status = 'verifying';
-      await updateStage(4, 'running');
-      const testCmd = structure.testCommand || 'npm test';
-      await appendLog('verification', 'info', `Executing real verification command: "${testCmd}" in ${repo.localPath}...`);
-
-      const verificationResult = await VerificationRunner.run(repo.localPath, testCmd);
-      task.verification = verificationResult;
-
-      if (verificationResult.passed) {
-        await appendLog(
-          'verification',
-          'success',
-          `✅ Verification passed in ${verificationResult.durationMs}ms (exit code 0).`,
-          { stdout: verificationResult.stdout, stderr: verificationResult.stderr }
-        );
-        await updateStage(4, 'completed', `Verification PASSED in ${verificationResult.durationMs}ms`);
-      } else {
-        await appendLog(
-          'verification',
-          'warn',
-          `⚠️ Verification check finished with exit code ${verificationResult.exitCode} (${verificationResult.durationMs}ms). Storing diagnostic logs.`,
-          { stdout: verificationResult.stdout, stderr: verificationResult.stderr }
-        );
-        await updateStage(4, 'completed', `Verification ran (Exit code ${verificationResult.exitCode})`);
+      if (!provider.isConfigured()) {
+        const helpMessage = provider.getConfigurationHelp();
+        await appendLog('ai_analysis', 'error', `⚠️ Provider Configuration Missing: ${helpMessage}`);
+        throw new Error(`LLM provider "${provider.name}" is not configured. ${helpMessage}`);
       }
 
-      // STAGE 6: Summary & Complete
-      await updateStage(5, 'running');
-      task.status = 'completed';
-      task.completedAt = new Date().toISOString();
-      await appendLog('summary', 'success', '🎉 DevForge task workflow completed successfully.');
-      await updateStage(5, 'completed', 'Execution finished with full audit trail.');
+      const llmResult = await provider.analyze({
+        taskPrompt: task.prompt,
+        repositoryName: repo.name,
+        techStack: structure.detectedLanguages,
+        totalFiles: structure.totalFiles,
+        filesContext: extractedContext,
+      });
+
+      await appendLog(
+        'ai_analysis',
+        'success',
+        `Received structured AI diagnosis from ${llmResult.provider} (${llmResult.model}) in ${llmResult.latencyMs}ms.`
+      );
+      await updateStage(
+        3,
+        'completed',
+        `AI reasoning completed in ${llmResult.latencyMs}ms.`
+      );
+
+      // STAGE 5: Solution Plan & Patch Proposal Generation
+      await updateStage(4, 'running');
+      await appendLog('patch_generation', 'info', 'Computing targeted code patch and calculating unified diffs...');
+
+      const plan: SolutionPlan = {
+        problemUnderstanding: llmResult.analysis.problemUnderstanding,
+        rootCauseHypothesis: llmResult.analysis.rootCauseHypothesis,
+        relevantFilesAnalysis: llmResult.analysis.relevantFilesAnalysis,
+        proposedSolution: llmResult.analysis.proposedSolution,
+        implementationSteps: llmResult.analysis.implementationSteps,
+        potentialRisks: llmResult.analysis.potentialRisks,
+        estimatedComplexity: llmResult.analysis.estimatedComplexity,
+        contextSummary: {
+          filesCount: extractedContext.length,
+          totalBytes: totalContextBytes,
+          approximateTokens: Math.round(totalContextBytes / 4),
+        },
+        llmProvider: llmResult.provider,
+        llmModel: llmResult.model,
+        llmLatencyMs: llmResult.latencyMs,
+      };
+      task.plan = plan;
+
+      const patchProposal = await PatchGenerator.generateProposal(
+        task.id,
+        repo.localPath,
+        llmResult,
+        extractedContext
+      );
+      task.patchProposal = patchProposal;
+
+      await appendLog(
+        'patch_generation',
+        'success',
+        `Generated patch proposal across ${patchProposal.changes.length} files. All target files untouched pending review.`
+      );
+      await updateStage(
+        4,
+        'completed',
+        `Patch proposal ready (${patchProposal.changes.length} files). Awaiting developer approval.`
+      );
+
+      // STOP HERE: Set status to patch_ready / awaiting_approval
+      task.status = 'patch_ready';
+      await appendLog('system', 'warn', '⏸️ Workflow paused: Developer review and approval required before applying changes.');
 
       await AppStore.saveTask(task);
       if (onProgress) onProgress(task);
@@ -214,10 +236,145 @@ export class AgentOrchestrator {
       task.status = 'failed';
       task.errorMessage = errorMsg;
       task.completedAt = new Date().toISOString();
-      await appendLog('system', 'error', `❌ Agent execution failed: ${errorMsg}`);
+      await appendLog('system', 'error', `❌ ${errorMsg}`);
       await AppStore.saveTask(task);
       if (onProgress) onProgress(task);
       return task;
     }
+  }
+
+  /**
+   * Developer explicitly approves the proposed patch: Applies changes and runs verification
+   */
+  static async approveAndApply(
+    taskId: string,
+    onProgress?: (task: TaskRun) => void
+  ): Promise<TaskRun> {
+    const task = await AppStore.getTaskById(taskId);
+    if (!task) throw new Error(`Task ${taskId} not found`);
+
+    const repo = await AppStore.getRepositoryById(task.repositoryId);
+    if (!repo) throw new Error(`Repository ${task.repositoryId} not found`);
+
+    if (!task.patchProposal || task.patchProposal.changes.length === 0) {
+      throw new Error('No patch proposal available for this task.');
+    }
+
+    const appendLog = async (
+      stageId: TaskStage['id'] | 'system',
+      level: LogEntry['level'],
+      message: string,
+      details?: Record<string, unknown> | string
+    ) => {
+      const log = this.createLog(stageId, level, message, details);
+      task.logs.push(log);
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+    };
+
+    const updateStage = async (
+      stageIndex: number,
+      status: TaskStage['status'],
+      summary?: string
+    ) => {
+      task.currentStageIndex = stageIndex;
+      const stage = task.stages[stageIndex];
+      if (stage) {
+        stage.status = status;
+        if (status === 'running') stage.startedAt = new Date().toISOString();
+        if (status === 'completed' || status === 'failed') stage.completedAt = new Date().toISOString();
+        if (summary) stage.summary = summary;
+      }
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+    };
+
+    try {
+      task.status = 'applying';
+      await updateStage(5, 'running');
+      await appendLog('approval_and_apply', 'info', 'Developer approved patch. Applying changes to repository...');
+
+      const applyResult = await PatchEngine.applyPatch(repo.localPath, task.patchProposal);
+
+      if (!applyResult.success) {
+        throw new Error(applyResult.error || 'Failed to apply patch');
+      }
+
+      task.backupId = applyResult.backupId;
+      task.status = 'applied';
+      await appendLog(
+        'approval_and_apply',
+        'success',
+        `Successfully applied patch to ${applyResult.modifiedFiles.length} files: ${applyResult.modifiedFiles.join(', ')}. Snapshot backup: ${applyResult.backupId}`
+      );
+      await updateStage(5, 'completed', `Applied patch to ${applyResult.modifiedFiles.length} files.`);
+
+      // STAGE 6: Verification
+      task.status = 'verifying';
+      await updateStage(6, 'running');
+
+      const structure = await ProjectAnalyzer.analyze(repo.localPath);
+      const testCmd = structure.testCommand || 'npm test';
+      await appendLog('verification', 'info', `Executing verification command: "${testCmd}" in ${repo.localPath}...`);
+
+      const config = getConfig();
+      if (config.autoRunVerification) {
+        const verification = await VerificationRunner.run(repo.localPath, testCmd);
+        task.verification = verification;
+
+        if (verification.passed) {
+          await appendLog('verification', 'success', `✅ Verification passed in ${verification.durationMs}ms (exit code 0).`);
+          await updateStage(6, 'completed', `Verification PASSED in ${verification.durationMs}ms`);
+        } else {
+          await appendLog('verification', 'warn', `⚠️ Verification check finished with exit code ${verification.exitCode} (${verification.durationMs}ms).`);
+          await updateStage(6, 'completed', `Verification executed (Exit code ${verification.exitCode})`);
+        }
+      } else {
+        await updateStage(6, 'skipped', 'Automated verification skipped by configuration.');
+      }
+
+      // Complete
+      task.status = 'completed';
+      task.completedAt = new Date().toISOString();
+      await updateStage(7, 'completed', 'Workflow completed with full audit trail.');
+      await appendLog('summary', 'success', '🎉 DevForge task completed successfully.');
+
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+      return task;
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      task.status = 'failed';
+      task.errorMessage = errorMsg;
+      await appendLog('system', 'error', `❌ Application failed: ${errorMsg}`);
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+      return task;
+    }
+  }
+
+  /**
+   * Developer rejects the proposed patch: Repository remains 100% untouched
+   */
+  static async rejectTask(
+    taskId: string,
+    onProgress?: (task: TaskRun) => void
+  ): Promise<TaskRun> {
+    const task = await AppStore.getTaskById(taskId);
+    if (!task) throw new Error(`Task ${taskId} not found`);
+
+    task.status = 'rejected';
+    task.completedAt = new Date().toISOString();
+
+    const log = this.createLog('system', 'warn', '🛑 Patch proposal was rejected by developer. Repository files remain completely untouched.');
+    task.logs.push(log);
+
+    if (task.patchProposal) {
+      task.patchProposal.rejectedAt = new Date().toISOString();
+    }
+
+    await AppStore.saveTask(task);
+    if (onProgress) onProgress(task);
+    return task;
   }
 }

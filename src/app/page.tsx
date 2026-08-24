@@ -22,8 +22,17 @@ import {
   Code2,
   FileText,
   AlertTriangle,
+  Cpu,
+  Shield,
+  Zap,
+  Info,
+  XCircle,
+  CheckCheck,
+  FileDiff,
+  CornerDownRight,
 } from 'lucide-react';
-import { Repository, TaskRun, FileNode, ProjectStructure, TaskStage } from '@/types';
+import Link from 'next/link';
+import { Repository, TaskRun, FileNode, ProjectStructure, TaskStage, PatchProposal, PatchFileChange } from '@/types';
 
 export default function DashboardPage() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -35,7 +44,9 @@ export default function DashboardPage() {
   const [activeTask, setActiveTask] = useState<TaskRun | null>(null);
   const [recentTasks, setRecentTasks] = useState<TaskRun[]>([]);
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'terminal' | 'plan' | 'diff' | 'verification' | 'files'>('terminal');
+  const [isApproving, setIsApproving] = useState<boolean>(false);
+  const [isRejecting, setIsRejecting] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'diff' | 'plan' | 'verification' | 'context' | 'terminal' | 'files'>('plan');
 
   const [isCloning, setIsCloning] = useState<boolean>(false);
   const [showCloneModal, setShowCloneModal] = useState<boolean>(false);
@@ -46,32 +57,33 @@ export default function DashboardPage() {
     gitVersion: string;
     nodeVersion: string;
     aiProvider: string;
+    hasGeminiKey: boolean;
+    hasOpenAIKey: boolean;
+    hasAnthropicKey: boolean;
   } | null>(null);
 
-  // Preset prompts for rapid developer testing
+  // Preset prompts tailored for codebase analysis & repair
   const presets = [
     {
+      title: 'Fix Login Endpoint Bug',
+      prompt: 'Find why the login request fails and explain the root cause. Propose a targeted patch to fix it.',
+    },
+    {
       title: 'Analyze Project Architecture',
-      prompt: 'Scan codebase structure, entrypoints, and verify test runner configuration.',
+      prompt: 'Analyze repository architecture, dependency layers, entrypoints, and evaluate modularity.',
     },
     {
-      title: 'Add Input Validation',
-      prompt: 'Inspect API route handlers and add robust validation for incoming task payloads.',
-    },
-    {
-      title: 'Fix Verification Runner',
-      prompt: 'Investigate test execution timeout handling and ensure stderr is properly captured.',
+      title: 'Security & Secret Filtering Audit',
+      prompt: 'Verify how context extraction protects sensitive environment files and prevents path traversal.',
     },
   ];
 
-  // Fetch initial data
   useEffect(() => {
     fetchHealth();
     fetchRepositories();
     fetchTasks();
   }, []);
 
-  // When selected repo changes, load its structure
   useEffect(() => {
     if (selectedRepoId) {
       const repo = repositories.find((r) => r.id === selectedRepoId);
@@ -91,6 +103,9 @@ export default function DashboardPage() {
           gitVersion: data.gitVersion,
           nodeVersion: data.nodeVersion,
           aiProvider: data.aiProvider,
+          hasGeminiKey: data.hasGeminiKey,
+          hasOpenAIKey: data.hasOpenAIKey,
+          hasAnthropicKey: data.hasAnthropicKey,
         });
       }
     } catch {
@@ -134,6 +149,9 @@ export default function DashboardPage() {
         setRecentTasks(data);
         if (data.length > 0 && !activeTask) {
           setActiveTask(data[0]);
+          if (data[0].patchProposal && data[0].patchProposal.changes.length > 0) {
+            setActiveTab('diff');
+          }
         }
       }
     } catch (err) {
@@ -199,7 +217,7 @@ export default function DashboardPage() {
       setActiveTask(initialTask);
       setRecentTasks((prev) => [initialTask, ...prev]);
 
-      // 2. Run agent pipeline
+      // 2. Run agent pipeline (up to patch proposal)
       const runRes = await fetch(`/api/tasks/${initialTask.id}/run`, {
         method: 'POST',
       });
@@ -210,6 +228,12 @@ export default function DashboardPage() {
         setRecentTasks((prev) =>
           prev.map((t) => (t.id === runData.task.id ? runData.task : t))
         );
+
+        if (runData.task.patchProposal?.changes?.length > 0) {
+          setActiveTab('diff');
+        } else if (runData.task.plan) {
+          setActiveTab('plan');
+        }
       }
     } catch (err) {
       console.error('Agent execution error:', err);
@@ -218,10 +242,71 @@ export default function DashboardPage() {
     }
   }
 
-  // Calculate quick metrics
+  async function handleApprovePatch() {
+    if (!activeTask) return;
+
+    setIsApproving(true);
+    try {
+      const res = await fetch(`/api/tasks/${activeTask.id}/approve`, {
+        method: 'POST',
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActiveTask(data.task);
+        setRecentTasks((prev) =>
+          prev.map((t) => (t.id === data.task.id ? data.task : t))
+        );
+        if (data.task.verification) {
+          setActiveTab('verification');
+        }
+        if (selectedRepo) {
+          fetchRepoDetails(selectedRepo.id);
+        }
+      } else {
+        const err = await res.json();
+        alert(`Failed to apply patch: ${err.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`Error approving patch: ${String(err)}`);
+    } finally {
+      setIsApproving(false);
+    }
+  }
+
+  async function handleRejectPatch() {
+    if (!activeTask) return;
+
+    setIsRejecting(true);
+    try {
+      const res = await fetch(`/api/tasks/${activeTask.id}/reject`, {
+        method: 'POST',
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActiveTask(data.task);
+        setRecentTasks((prev) =>
+          prev.map((t) => (t.id === data.task.id ? data.task : t))
+        );
+      }
+    } catch (err) {
+      alert(`Error rejecting patch: ${String(err)}`);
+    } finally {
+      setIsRejecting(false);
+    }
+  }
+
   const totalCompleted = recentTasks.filter((t) => t.status === 'completed').length;
-  const verificationPassedCount = recentTasks.filter((t) => t.verification?.passed).length;
-  const verificationRate = recentTasks.length > 0 ? Math.round((verificationPassedCount / recentTasks.length) * 100) : 100;
+  const activeKeyConfigured = Boolean(
+    (systemHealth?.aiProvider === 'gemini' && systemHealth?.hasGeminiKey) ||
+    (systemHealth?.aiProvider === 'openai' && systemHealth?.hasOpenAIKey) ||
+    (systemHealth?.aiProvider === 'anthropic' && systemHealth?.hasAnthropicKey) ||
+    systemHealth?.aiProvider === 'ollama'
+  );
+
+  const isAwaitingApproval = activeTask?.status === 'patch_ready' || activeTask?.status === 'awaiting_approval';
+  const hasPatch = Boolean(activeTask?.patchProposal && activeTask.patchProposal.changes.length > 0);
 
   return (
     <div>
@@ -229,7 +314,7 @@ export default function DashboardPage() {
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-header">
-            <span>CONNECTED WORKSPACES</span>
+            <span>CONNECTED WORKSPACE</span>
             <FolderGit2 size={16} color="#38bdf8" />
           </div>
           <div className="stat-value">{repositories.length}</div>
@@ -240,31 +325,39 @@ export default function DashboardPage() {
 
         <div className="stat-card">
           <div className="stat-header">
-            <span>AGENT TASKS PROCESSED</span>
+            <span>AI DIAGNOSES & PATCHES</span>
             <Sparkles size={16} color="#8b5cf6" />
           </div>
           <div className="stat-value">{recentTasks.length}</div>
-          <div className="stat-sub">{totalCompleted} succeeded</div>
+          <div className="stat-sub">{totalCompleted} verified completions</div>
         </div>
 
         <div className="stat-card">
           <div className="stat-header">
-            <span>VERIFICATION PASS RATE</span>
+            <span>AI REASONING ENGINE</span>
+            <Cpu size={16} color={activeKeyConfigured ? '#10b981' : '#f59e0b'} />
+          </div>
+          <div className="stat-value" style={{ fontSize: '18px', textTransform: 'capitalize' }}>
+            {systemHealth?.aiProvider || 'Gemini'}
+          </div>
+          <div className="stat-sub">
+            {activeKeyConfigured ? (
+              <span style={{ color: '#10b981' }}>● API Key Active</span>
+            ) : (
+              <span style={{ color: '#f59e0b' }}>⚠️ API Key Required</span>
+            )}
+          </div>
+        </div>
+
+        <div className="stat-card">
+          <div className="stat-header">
+            <span>APPROVAL SAFETY SHIELD</span>
             <ShieldCheck size={16} color="#10b981" />
           </div>
-          <div className="stat-value">{verificationRate}%</div>
-          <div className="stat-sub">Real test suite executions</div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-header">
-            <span>RUNTIME ENVIRONMENT</span>
-            <Terminal size={16} color="#f59e0b" />
+          <div className="stat-value" style={{ fontSize: '15px', color: '#10b981' }}>
+            ENFORCED
           </div>
-          <div className="stat-value" style={{ fontSize: '16px' }}>
-            {systemHealth?.gitVersion?.slice(0, 15) || 'Git Available'}
-          </div>
-          <div className="stat-sub">Node {systemHealth?.nodeVersion || 'v20+'} (Local Host)</div>
+          <div className="stat-sub">Zero autonomous file writes</div>
         </div>
       </div>
 
@@ -343,10 +436,10 @@ export default function DashboardPage() {
             </div>
             <div className="card-body">
               <div className="form-group">
-                <label className="form-label">Instruction / Bug Description</label>
+                <label className="form-label">Task Instruction</label>
                 <textarea
                   className="form-textarea"
-                  placeholder="e.g., Scan project structure, identify test configurations, and add input validation..."
+                  placeholder="e.g., Find why the login request fails, explain the root cause, and generate a targeted code patch..."
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   rows={4}
@@ -355,7 +448,7 @@ export default function DashboardPage() {
 
               {/* Preset prompt pills */}
               <div className="form-group">
-                <label className="form-label">Quick Scenarios</label>
+                <label className="form-label">Analysis & Repair Scenarios</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                   {presets.map((p, idx) => (
                     <button
@@ -377,13 +470,13 @@ export default function DashboardPage() {
               >
                 {isRunning ? (
                   <>
-                    <RefreshCw size={15} className="spin" style={{ animation: 'spin 1s linear infinite' }} />
-                    <span>Agent Orchestrating...</span>
+                    <RefreshCw size={15} style={{ animation: 'spin 1s linear infinite' }} />
+                    <span>Analyzing & Formulating Patch...</span>
                   </>
                 ) : (
                   <>
                     <Play size={15} />
-                    <span>Launch DevForge Agent</span>
+                    <span>Run AI Analysis & Generate Patch</span>
                   </>
                 )}
               </button>
@@ -396,7 +489,7 @@ export default function DashboardPage() {
               <div className="card-header">
                 <div className="card-title">
                   <Clock size={16} color="#94a3b8" />
-                  <span>Recent Executions</span>
+                  <span>Recent Tasks</span>
                 </div>
               </div>
               <div className="card-body" style={{ padding: '8px' }}>
@@ -426,10 +519,18 @@ export default function DashboardPage() {
                       </div>
                       <span
                         className={`log-badge ${
-                          t.status === 'completed' ? 'success' : t.status === 'failed' ? 'error' : 'info'
+                          t.status === 'completed'
+                            ? 'success'
+                            : t.status === 'patch_ready'
+                            ? 'warn'
+                            : t.status === 'rejected'
+                            ? 'meta'
+                            : t.status === 'failed'
+                            ? 'error'
+                            : 'info'
                         }`}
                       >
-                        {t.status}
+                        {t.status.replace('_', ' ').toUpperCase()}
                       </span>
                     </div>
                   ))}
@@ -441,24 +542,26 @@ export default function DashboardPage() {
 
         {/* Right Column: Execution Pipeline & Diagnostic Work Area */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* 6-Stage Pipeline Tracker */}
+          {/* Stage Pipeline Tracker */}
           <div className="card-panel">
             <div className="card-header">
               <div className="card-title">
                 <Layers size={16} color="#38bdf8" />
-                <span>Agent Execution Pipeline</span>
+                <span>Diagnostic & Code Repair Pipeline</span>
               </div>
               {activeTask && (
                 <span
                   className={`log-badge ${
                     activeTask.status === 'completed'
                       ? 'success'
+                      : activeTask.status === 'patch_ready'
+                      ? 'warn'
                       : activeTask.status === 'failed'
                       ? 'error'
                       : 'info'
                   }`}
                 >
-                  STATUS: {activeTask.status.toUpperCase()}
+                  STATUS: {activeTask.status.replace('_', ' ').toUpperCase()}
                 </span>
               )}
             </div>
@@ -467,14 +570,15 @@ export default function DashboardPage() {
             <div className="pipeline-steps">
               {(
                 activeTask?.stages || [
-                  { id: 'structure_analysis', name: '1. Structure Scan', status: 'pending' },
-                  { id: 'file_identification', name: '2. Target Files', status: 'pending' },
-                  { id: 'solution_plan', name: '3. Plan & Reason', status: 'pending' },
-                  { id: 'code_modification', name: '4. Code Patch', status: 'pending' },
-                  { id: 'verification', name: '5. Verification', status: 'pending' },
-                  { id: 'summary', name: '6. Review & Diff', status: 'pending' },
+                  { id: 'structure_analysis', name: '1. Scan', status: 'pending' },
+                  { id: 'file_identification', name: '2. Search', status: 'pending' },
+                  { id: 'context_collection', name: '3. Context', status: 'pending' },
+                  { id: 'ai_analysis', name: '4. AI Reason', status: 'pending' },
+                  { id: 'patch_generation', name: '5. Proposed Patch', status: 'pending' },
+                  { id: 'approval_and_apply', name: '6. Review & Apply', status: 'pending' },
+                  { id: 'verification', name: '7. Verification', status: 'pending' },
                 ]
-              ).map((st, idx, arr) => {
+              ).slice(0, 7).map((st, idx, arr) => {
                 const isActive = st.status === 'running';
                 const isDone = st.status === 'completed';
                 return (
@@ -496,28 +600,34 @@ export default function DashboardPage() {
             {/* Interactive Workspace Tabs */}
             <div className="tabs-header">
               <button
-                className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
-                onClick={() => setActiveTab('terminal')}
+                className={`tab-btn ${activeTab === 'diff' ? 'active' : ''}`}
+                onClick={() => setActiveTab('diff')}
               >
-                <Terminal size={15} /> Console Stream ({activeTask?.logs?.length || 0})
+                <FileDiff size={15} /> Proposed Patch ({activeTask?.patchProposal?.changes?.length || 0})
               </button>
               <button
                 className={`tab-btn ${activeTab === 'plan' ? 'active' : ''}`}
                 onClick={() => setActiveTab('plan')}
               >
-                <FileText size={15} /> Solution Plan
-              </button>
-              <button
-                className={`tab-btn ${activeTab === 'diff' ? 'active' : ''}`}
-                onClick={() => setActiveTab('diff')}
-              >
-                <Code2 size={15} /> Code Changes ({activeTask?.changes?.length || 0})
+                <FileText size={15} /> Solution Plan {activeTask?.plan ? '✓' : ''}
               </button>
               <button
                 className={`tab-btn ${activeTab === 'verification' ? 'active' : ''}`}
                 onClick={() => setActiveTab('verification')}
               >
-                <ShieldCheck size={15} /> Verification Results
+                <ShieldCheck size={15} /> Verification {activeTask?.verification?.passed ? '✅' : ''}
+              </button>
+              <button
+                className={`tab-btn ${activeTab === 'context' ? 'active' : ''}`}
+                onClick={() => setActiveTab('context')}
+              >
+                <Code2 size={15} /> Context Files ({activeTask?.extractedContext?.length || 0})
+              </button>
+              <button
+                className={`tab-btn ${activeTab === 'terminal' ? 'active' : ''}`}
+                onClick={() => setActiveTab('terminal')}
+              >
+                <Terminal size={15} /> Console Stream ({activeTask?.logs?.length || 0})
               </button>
               <button
                 className={`tab-btn ${activeTab === 'files' ? 'active' : ''}`}
@@ -527,151 +637,137 @@ export default function DashboardPage() {
               </button>
             </div>
 
-            {/* Tab 1: Terminal Log Stream */}
-            {activeTab === 'terminal' && (
-              <div className="terminal-window">
-                {activeTask?.logs && activeTask.logs.length > 0 ? (
-                  activeTask.logs.map((log) => (
-                    <div key={log.id} className="log-line">
-                      <span className="log-time">
-                        {new Date(log.timestamp).toLocaleTimeString()}
-                      </span>
-                      <span className={`log-badge ${log.level}`}>
-                        {log.stage}
-                      </span>
-                      <span className="log-msg">{log.message}</span>
-                    </div>
-                  ))
-                ) : (
-                  <div style={{ color: 'var(--text-muted)', padding: '24px', textAlign: 'center' }}>
-                    Agent console ready. Select a prompt or type your instructions and click "Launch DevForge Agent".
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Tab 2: Solution Plan & Diagnostics */}
-            {activeTab === 'plan' && (
-              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {activeTask?.plan ? (
-                  <>
-                    <div
-                      style={{
-                        padding: '14px 16px',
-                        background: 'var(--bg-panel)',
-                        borderRadius: '8px',
-                        border: '1px solid var(--border-subtle)',
-                      }}
-                    >
-                      <h4 style={{ fontSize: '14px', marginBottom: '8px', color: '#38bdf8' }}>
-                        Problem Diagnosis & Strategy
-                      </h4>
-                      <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-                        {activeTask.plan.problemExplanation}
-                      </p>
-                    </div>
-
-                    <div>
-                      <h4 style={{ fontSize: '13px', marginBottom: '10px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-                        Proposed Resolution Steps
-                      </h4>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                        {activeTask.plan.steps.map((step, idx) => (
-                          <div
-                            key={idx}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '10px',
-                              padding: '10px 14px',
-                              background: 'var(--bg-input)',
-                              borderRadius: '6px',
-                              fontSize: '13px',
-                            }}
-                          >
-                            <span
-                              style={{
-                                width: '20px',
-                                height: '20px',
-                                borderRadius: '50%',
-                                background: 'var(--cyan-glow)',
-                                color: '#38bdf8',
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'center',
-                                fontSize: '11px',
-                                fontFamily: 'var(--font-mono)',
-                              }}
-                            >
-                              {idx + 1}
-                            </span>
-                            <span>{step}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Relevant Target Files */}
-                    {activeTask.relevantFiles && activeTask.relevantFiles.length > 0 && (
-                      <div>
-                        <h4 style={{ fontSize: '13px', marginBottom: '10px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-                          Identified Context Files
-                        </h4>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          {activeTask.relevantFiles.map((rf, idx) => (
-                            <div
-                              key={idx}
-                              style={{
-                                display: 'flex',
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                padding: '8px 12px',
-                                background: 'var(--bg-input)',
-                                borderRadius: '6px',
-                                fontSize: '12.5px',
-                                fontFamily: 'var(--font-mono)',
-                              }}
-                            >
-                              <span style={{ color: '#38bdf8' }}>{rf.path}</span>
-                              <span className="log-badge info">Relevance: {rf.relevanceScore}%</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
-                    No solution plan generated yet. Run an agent task to generate architectural diagnosis.
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Tab 3: Code Changes & Diff */}
+            {/* TAB: Proposed Patch & Human Approval Diff Viewer */}
             {activeTab === 'diff' && (
               <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {activeTask?.changes && activeTask.changes.length > 0 ? (
-                  activeTask.changes.map((change, idx) => (
+                {/* Human Approval Action Banner */}
+                {hasPatch && (
+                  <div
+                    style={{
+                      padding: '16px 20px',
+                      borderRadius: '8px',
+                      background: isAwaitingApproval
+                        ? 'rgba(245, 158, 11, 0.1)'
+                        : activeTask?.status === 'completed' || activeTask?.status === 'applied'
+                        ? 'rgba(16, 185, 129, 0.1)'
+                        : 'var(--bg-panel)',
+                      border: `1px solid ${
+                        isAwaitingApproval
+                          ? '#f59e0b'
+                          : activeTask?.status === 'completed' || activeTask?.status === 'applied'
+                          ? '#10b981'
+                          : 'var(--border-subtle)'
+                      }`,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: '16px',
+                    }}
+                  >
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '14px' }}>
+                        {isAwaitingApproval ? (
+                          <>
+                            <AlertTriangle size={18} color="#f59e0b" />
+                            <span>Action Required: Developer Approval & Review</span>
+                          </>
+                        ) : activeTask?.status === 'completed' || activeTask?.status === 'applied' ? (
+                          <>
+                            <CheckCircle2 size={18} color="#10b981" />
+                            <span>Patch Applied & Verified</span>
+                          </>
+                        ) : activeTask?.status === 'rejected' ? (
+                          <>
+                            <XCircle size={18} color="#94a3b8" />
+                            <span>Patch Rejected by Developer</span>
+                          </>
+                        ) : (
+                          <span>Proposed Patch Proposal</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                        {isAwaitingApproval
+                          ? 'Repository files remain 100% untouched until you review the diff and explicitly approve.'
+                          : activeTask?.status === 'completed' || activeTask?.status === 'applied'
+                          ? `Changes applied safely to ${activeTask?.patchProposal?.modifiedFiles?.length || 1} file(s). Snapshot backup: ${activeTask?.backupId || 'created'}.`
+                          : 'Repository files were left untouched.'}
+                      </div>
+                    </div>
+
+                    {isAwaitingApproval && (
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          onClick={handleRejectPatch}
+                          disabled={isRejecting || isApproving}
+                          style={{ borderColor: '#f43f5e', color: '#fda4af' }}
+                        >
+                          <XCircle size={14} /> Reject Changes
+                        </button>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={handleApprovePatch}
+                          disabled={isRejecting || isApproving}
+                          style={{ background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)', borderColor: '#34d399' }}
+                        >
+                          {isApproving ? (
+                            <>
+                              <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                              <span>Applying & Verifying...</span>
+                            </>
+                          ) : (
+                            <>
+                              <CheckCheck size={14} /> Approve & Apply Patch
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Diff Blocks */}
+                {activeTask?.patchProposal?.changes && activeTask.patchProposal.changes.length > 0 ? (
+                  activeTask.patchProposal.changes.map((change, idx) => (
                     <div key={idx} className="diff-container">
                       <div className="diff-header">
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <FileCode size={15} color="#38bdf8" />
-                          <span>{change.path}</span>
+                          <span style={{ fontWeight: 600, color: '#38bdf8' }}>{change.filePath}</span>
+                          <span className="log-badge info">MODIFY</span>
                         </div>
-                        <div style={{ display: 'flex', gap: '8px' }}>
+                        <div style={{ display: 'flex', gap: '10px', fontSize: '12px' }}>
                           <span style={{ color: '#6ee7b7' }}>+{change.linesAdded} lines</span>
                           <span style={{ color: '#fda4af' }}>-{change.linesRemoved} lines</span>
                         </div>
                       </div>
+
+                      {/* Reason & Expected effect banner */}
+                      <div
+                        style={{
+                          padding: '10px 16px',
+                          background: 'rgba(30, 41, 59, 0.4)',
+                          borderBottom: '1px solid var(--border-subtle)',
+                          fontSize: '12.5px',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '4px',
+                        }}
+                      >
+                        <div><strong>Reason:</strong> <span style={{ color: 'var(--text-secondary)' }}>{change.reason}</span></div>
+                        <div><strong>Expected Effect:</strong> <span style={{ color: 'var(--text-secondary)' }}>{change.expectedEffect}</span></div>
+                      </div>
+
+                      {/* Unified Diff Gutter View */}
                       <div className="diff-body">
                         {change.diffHunks.map((hunk, hIdx) => (
                           <div
                             key={hIdx}
                             className={`diff-line ${
-                              hunk.startsWith('+')
+                              hunk.startsWith('+') && !hunk.startsWith('+++')
                                 ? 'add'
-                                : hunk.startsWith('-')
+                                : hunk.startsWith('-') && !hunk.startsWith('---')
                                 ? 'remove'
                                 : 'meta'
                             }`}
@@ -684,13 +780,187 @@ export default function DashboardPage() {
                   ))
                 ) : (
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
-                    No code changes staged yet.
+                    No patch proposals generated yet. Run an analysis task to formulate code repairs.
                   </div>
                 )}
               </div>
             )}
 
-            {/* Tab 4: Verification & Test Results */}
+            {/* TAB: Solution Plan & Diagnostics */}
+            {activeTab === 'plan' && (
+              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                {activeTask?.plan ? (
+                  <>
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '12px 16px',
+                        background: 'var(--bg-panel)',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-subtle)',
+                        fontSize: '12.5px',
+                        flexWrap: 'wrap',
+                        gap: '10px',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Sparkles size={16} color="#8b5cf6" />
+                        <span><strong>Model:</strong> {activeTask.plan.llmProvider} ({activeTask.plan.llmModel})</span>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px' }}>
+                        <span><strong>Latency:</strong> {activeTask.plan.llmLatencyMs}ms</span>
+                        <span><strong>Complexity:</strong> <span style={{ textTransform: 'capitalize', color: '#38bdf8' }}>{activeTask.plan.estimatedComplexity}</span></span>
+                      </div>
+                    </div>
+
+                    <div
+                      style={{
+                        padding: '16px',
+                        background: 'var(--bg-input)',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                    >
+                      <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Info size={14} color="#38bdf8" />
+                        Problem Understanding
+                      </h4>
+                      <p style={{ fontSize: '13.5px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                        {activeTask.plan.problemUnderstanding}
+                      </p>
+                    </div>
+
+                    <div
+                      style={{
+                        padding: '16px',
+                        background: 'rgba(139, 92, 246, 0.08)',
+                        borderRadius: '8px',
+                        border: '1px solid rgba(139, 92, 246, 0.25)',
+                      }}
+                    >
+                      <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: '#a78bfa', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Zap size={14} color="#a78bfa" />
+                        Root-Cause Hypothesis
+                      </h4>
+                      <p style={{ fontSize: '13.5px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                        {activeTask.plan.rootCauseHypothesis}
+                      </p>
+                    </div>
+
+                    {activeTask.plan.relevantFilesAnalysis && activeTask.plan.relevantFilesAnalysis.length > 0 && (
+                      <div>
+                        <h4 style={{ fontSize: '13px', marginBottom: '10px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                          Identified Files & Proposed Actions ({activeTask.plan.relevantFilesAnalysis.length})
+                        </h4>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {activeTask.plan.relevantFilesAnalysis.map((fa, idx) => (
+                            <div
+                              key={idx}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'flex-start',
+                                justifyContent: 'space-between',
+                                padding: '12px 14px',
+                                background: 'var(--bg-input)',
+                                borderRadius: '6px',
+                                border: '1px solid var(--border-subtle)',
+                                gap: '12px',
+                              }}
+                            >
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: '#38bdf8', fontWeight: 600 }}>
+                                  {fa.path}
+                                </span>
+                                <span style={{ fontSize: '12.5px', color: 'var(--text-secondary)' }}>
+                                  {fa.relevanceReason}
+                                </span>
+                              </div>
+                              <span
+                                className={`log-badge ${
+                                  fa.proposedAction === 'modify'
+                                    ? 'warn'
+                                    : fa.proposedAction === 'create'
+                                    ? 'success'
+                                    : 'info'
+                                }`}
+                              >
+                                {fa.proposedAction.toUpperCase()}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div
+                      style={{
+                        padding: '16px',
+                        background: 'var(--bg-input)',
+                        borderRadius: '8px',
+                        border: '1px solid var(--border-subtle)',
+                      }}
+                    >
+                      <h4 style={{ fontSize: '13px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                        Proposed Solution Architecture
+                      </h4>
+                      <p style={{ fontSize: '13.5px', color: 'var(--text-primary)', lineHeight: 1.6 }}>
+                        {activeTask.plan.proposedSolution}
+                      </p>
+                    </div>
+
+                    <div>
+                      <h4 style={{ fontSize: '13px', marginBottom: '10px', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                        Step-by-Step Implementation Changes ({activeTask.plan.implementationSteps.length})
+                      </h4>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                        {activeTask.plan.implementationSteps.map((step, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '12px',
+                              padding: '12px 14px',
+                              background: 'var(--bg-panel)',
+                              borderRadius: '6px',
+                              fontSize: '13px',
+                              border: '1px solid var(--border-subtle)',
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: '22px',
+                                height: '22px',
+                                borderRadius: '50%',
+                                background: 'var(--cyan-glow)',
+                                color: '#38bdf8',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '11px',
+                                fontFamily: 'var(--font-mono)',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {idx + 1}
+                            </span>
+                            <span style={{ color: 'var(--text-primary)' }}>{step}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
+                    No solution plan generated yet.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB: Verification Results */}
             {activeTab === 'verification' && (
               <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {activeTask?.verification ? (
@@ -720,7 +990,7 @@ export default function DashboardPage() {
                           <div style={{ fontWeight: 700, fontSize: '15px' }}>
                             {activeTask.verification.passed
                               ? 'VERIFICATION PASSED'
-                              : 'VERIFICATION CHECKS COMPLETED'}
+                              : 'VERIFICATION CHECKS FAILED'}
                           </div>
                           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
                             Command: <code>{activeTask.verification.command}</code> • Execution time: {activeTask.verification.durationMs}ms
@@ -729,17 +999,16 @@ export default function DashboardPage() {
                       </div>
                       <span
                         className={`log-badge ${
-                          activeTask.verification.passed ? 'success' : 'warn'
+                          activeTask.verification.passed ? 'success' : 'error'
                         }`}
                       >
                         EXIT CODE: {activeTask.verification.exitCode}
                       </span>
                     </div>
 
-                    {/* Output terminal */}
                     <div className="diff-container">
                       <div className="diff-header">
-                        <span>Execution Output (stdout / stderr)</span>
+                        <span>Test & Build Subprocess Output</span>
                       </div>
                       <pre
                         style={{
@@ -753,19 +1022,102 @@ export default function DashboardPage() {
                           whiteSpace: 'pre-wrap',
                         }}
                       >
-                        {activeTask.verification.stdout || activeTask.verification.stderr || 'No console output logged.'}
+                        {activeTask.verification.stdout || activeTask.verification.stderr || 'Execution completed without output.'}
                       </pre>
                     </div>
                   </>
                 ) : (
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
-                    No verification suite executed for this task yet.
+                    Verification suite runs automatically after human patch approval.
                   </div>
                 )}
               </div>
             )}
 
-            {/* Tab 5: Repository Explorer */}
+            {/* TAB: Context Files */}
+            {activeTab === 'context' && (
+              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '10px 14px',
+                    background: 'var(--bg-panel)',
+                    borderRadius: '6px',
+                    fontSize: '12.5px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Shield size={16} color="#10b981" />
+                    <span><strong>Security Filter Active:</strong> Secrets, <code>.env</code> files, and binary assets are strictly excluded.</span>
+                  </div>
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    Total Context: {activeTask?.extractedContext?.length || 0} files
+                  </span>
+                </div>
+
+                {activeTask?.extractedContext && activeTask.extractedContext.length > 0 ? (
+                  activeTask.extractedContext.map((file, idx) => (
+                    <div key={idx} className="diff-container">
+                      <div className="diff-header">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <FileCode size={15} color="#38bdf8" />
+                          <span style={{ fontWeight: 600, color: '#38bdf8' }}>{file.path}</span>
+                          <span className="log-badge info">{file.language}</span>
+                        </div>
+                        <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                          {Math.round(file.sizeBytes / 1024)} KB
+                        </span>
+                      </div>
+                      <pre
+                        style={{
+                          padding: '14px',
+                          background: '#050811',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: '12px',
+                          color: 'var(--text-primary)',
+                          maxHeight: '260px',
+                          overflowY: 'auto',
+                          whiteSpace: 'pre-wrap',
+                        }}
+                      >
+                        {file.content}
+                      </pre>
+                    </div>
+                  ))
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
+                    No context files extracted yet.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB: Terminal Log Stream */}
+            {activeTab === 'terminal' && (
+              <div className="terminal-window">
+                {activeTask?.logs && activeTask.logs.length > 0 ? (
+                  activeTask.logs.map((log) => (
+                    <div key={log.id} className="log-line">
+                      <span className="log-time">
+                        {new Date(log.timestamp).toLocaleTimeString()}
+                      </span>
+                      <span className={`log-badge ${log.level}`}>
+                        {log.stage}
+                      </span>
+                      <span className="log-msg">{log.message}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div style={{ color: 'var(--text-muted)', padding: '24px', textAlign: 'center' }}>
+                    Agent console ready.
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB: Repository Explorer */}
             {activeTab === 'files' && (
               <div style={{ padding: '20px' }}>
                 <h4 style={{ fontSize: '13px', marginBottom: '12px', color: 'var(--text-muted)', textTransform: 'uppercase' }}>
