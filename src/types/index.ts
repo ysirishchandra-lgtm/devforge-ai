@@ -113,6 +113,35 @@ export interface VerificationResult {
   ranAt: string;
 }
 
+export type GitWorkflowStatus =
+  | 'READY_FOR_GIT'
+  | 'BRANCH_CREATING'
+  | 'BRANCH_READY'
+  | 'GIT_BLOCKED'
+  | 'GIT_ERROR';
+
+export interface GitFileChange {
+  path: string;
+  status: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+  insertions?: number;
+  deletions?: number;
+}
+
+export interface GitRepairBranchInfo {
+  branchName: string;
+  baseBranch: string;
+  createdAt: string;
+  status: GitWorkflowStatus;
+  changedFiles: GitFileChange[];
+  diffSummary: {
+    totalFiles: number;
+    insertions: number;
+    deletions: number;
+  };
+  rawDiff?: string;
+  errorMessage?: string;
+}
+
 export interface ExtractedFileContext {
   path: string;
   language: string;
@@ -143,6 +172,7 @@ export interface TaskRun {
   plan?: SolutionPlan;
   patchProposal?: PatchProposal;
   verification?: VerificationResult;
+  gitBranchInfo?: GitRepairBranchInfo;
   backupId?: string;
   logs: LogEntry[];
   createdAt: string;

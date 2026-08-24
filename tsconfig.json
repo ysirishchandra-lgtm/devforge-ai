@@ -37,6 +37,9 @@
     "**/*.mts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "temp_repos",
+    "sample_repos",
+    ".devforge_data"
   ]
 }

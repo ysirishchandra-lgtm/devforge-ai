@@ -29,10 +29,11 @@ import {
   XCircle,
   CheckCheck,
   FileDiff,
-  CornerDownRight,
+  GitCommit,
+  GitPullRequest,
+  CheckSquare,
 } from 'lucide-react';
-import Link from 'next/link';
-import { Repository, TaskRun, FileNode, ProjectStructure, TaskStage, PatchProposal, PatchFileChange } from '@/types';
+import { Repository, TaskRun, FileNode, ProjectStructure, GitRepairBranchInfo } from '@/types';
 
 export default function DashboardPage() {
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -46,7 +47,8 @@ export default function DashboardPage() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isApproving, setIsApproving] = useState<boolean>(false);
   const [isRejecting, setIsRejecting] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'diff' | 'plan' | 'verification' | 'context' | 'terminal' | 'files'>('plan');
+  const [isPreparingGit, setIsPreparingGit] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'diff' | 'plan' | 'verification' | 'git' | 'context' | 'terminal' | 'files'>('plan');
 
   const [isCloning, setIsCloning] = useState<boolean>(false);
   const [showCloneModal, setShowCloneModal] = useState<boolean>(false);
@@ -62,7 +64,6 @@ export default function DashboardPage() {
     hasAnthropicKey: boolean;
   } | null>(null);
 
-  // Preset prompts tailored for codebase analysis & repair
   const presets = [
     {
       title: 'Fix Login Endpoint Bug',
@@ -149,7 +150,9 @@ export default function DashboardPage() {
         setRecentTasks(data);
         if (data.length > 0 && !activeTask) {
           setActiveTask(data[0]);
-          if (data[0].patchProposal && data[0].patchProposal.changes.length > 0) {
+          if (data[0].gitBranchInfo) {
+            setActiveTab('git');
+          } else if (data[0].patchProposal && data[0].patchProposal.changes.length > 0) {
             setActiveTab('diff');
           }
         }
@@ -199,7 +202,6 @@ export default function DashboardPage() {
     setActiveTab('terminal');
 
     try {
-      // 1. Create task
       const createRes = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -217,7 +219,6 @@ export default function DashboardPage() {
       setActiveTask(initialTask);
       setRecentTasks((prev) => [initialTask, ...prev]);
 
-      // 2. Run agent pipeline (up to patch proposal)
       const runRes = await fetch(`/api/tasks/${initialTask.id}/run`, {
         method: 'POST',
       });
@@ -297,6 +298,36 @@ export default function DashboardPage() {
     }
   }
 
+  async function handlePrepareGitBranch() {
+    if (!activeTask) return;
+
+    setIsPreparingGit(true);
+    try {
+      const res = await fetch(`/api/tasks/${activeTask.id}/git/branch`, {
+        method: 'POST',
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActiveTask(data.task);
+        setRecentTasks((prev) =>
+          prev.map((t) => (t.id === data.task.id ? data.task : t))
+        );
+        setActiveTab('git');
+        if (selectedRepo) {
+          fetchRepoDetails(selectedRepo.id);
+        }
+      } else {
+        const err = await res.json();
+        alert(`Failed to prepare Git branch: ${err.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      alert(`Error preparing Git branch: ${String(err)}`);
+    } finally {
+      setIsPreparingGit(false);
+    }
+  }
+
   const totalCompleted = recentTasks.filter((t) => t.status === 'completed').length;
   const activeKeyConfigured = Boolean(
     (systemHealth?.aiProvider === 'gemini' && systemHealth?.hasGeminiKey) ||
@@ -307,6 +338,11 @@ export default function DashboardPage() {
 
   const isAwaitingApproval = activeTask?.status === 'patch_ready' || activeTask?.status === 'awaiting_approval';
   const hasPatch = Boolean(activeTask?.patchProposal && activeTask.patchProposal.changes.length > 0);
+  const isVerified = Boolean(
+    activeTask?.verification &&
+    (activeTask.verification.overallStatus === 'PASS' ||
+     (activeTask.verification.results && activeTask.verification.results.every((r) => r.status === 'PASS')))
+  );
 
   return (
     <div>
@@ -351,13 +387,13 @@ export default function DashboardPage() {
 
         <div className="stat-card">
           <div className="stat-header">
-            <span>APPROVAL SAFETY SHIELD</span>
-            <ShieldCheck size={16} color="#10b981" />
+            <span>SAFE GIT WORKFLOW</span>
+            <GitBranch size={16} color="#38bdf8" />
           </div>
-          <div className="stat-value" style={{ fontSize: '15px', color: '#10b981' }}>
-            ENFORCED
+          <div className="stat-value" style={{ fontSize: '15px', color: '#38bdf8' }}>
+            {activeTask?.gitBranchInfo ? 'BRANCH READY' : 'SAFE REPAIR'}
           </div>
-          <div className="stat-sub">Zero autonomous file writes</div>
+          <div className="stat-sub">Non-destructive branch isolation</div>
         </div>
       </div>
 
@@ -446,7 +482,6 @@ export default function DashboardPage() {
                 />
               </div>
 
-              {/* Preset prompt pills */}
               <div className="form-group">
                 <label className="form-label">Analysis & Repair Scenarios</label>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -519,7 +554,9 @@ export default function DashboardPage() {
                       </div>
                       <span
                         className={`log-badge ${
-                          t.status === 'completed'
+                          t.gitBranchInfo
+                            ? 'success'
+                            : t.status === 'completed'
                             ? 'success'
                             : t.status === 'patch_ready'
                             ? 'warn'
@@ -530,7 +567,7 @@ export default function DashboardPage() {
                             : 'info'
                         }`}
                       >
-                        {t.status.replace('_', ' ').toUpperCase()}
+                        {t.gitBranchInfo ? 'BRANCH READY' : t.status.replace('_', ' ').toUpperCase()}
                       </span>
                     </div>
                   ))}
@@ -552,7 +589,9 @@ export default function DashboardPage() {
               {activeTask && (
                 <span
                   className={`log-badge ${
-                    activeTask.status === 'completed'
+                    activeTask.gitBranchInfo
+                      ? 'success'
+                      : activeTask.status === 'completed'
                       ? 'success'
                       : activeTask.status === 'patch_ready'
                       ? 'warn'
@@ -561,7 +600,7 @@ export default function DashboardPage() {
                       : 'info'
                   }`}
                 >
-                  STATUS: {activeTask.status.replace('_', ' ').toUpperCase()}
+                  STATUS: {activeTask.gitBranchInfo ? 'BRANCH READY' : activeTask.status.replace('_', ' ').toUpperCase()}
                 </span>
               )}
             </div>
@@ -615,7 +654,13 @@ export default function DashboardPage() {
                 className={`tab-btn ${activeTab === 'verification' ? 'active' : ''}`}
                 onClick={() => setActiveTab('verification')}
               >
-                <ShieldCheck size={15} /> Verification {activeTask?.verification?.overallStatus === 'PASS' ? '✅' : ''}
+                <ShieldCheck size={15} /> Verification {isVerified ? '✅' : ''}
+              </button>
+              <button
+                className={`tab-btn ${activeTab === 'git' ? 'active' : ''}`}
+                onClick={() => setActiveTab('git')}
+              >
+                <GitBranch size={15} /> Git Workflow {activeTask?.gitBranchInfo ? '🟢' : ''}
               </button>
               <button
                 className={`tab-btn ${activeTab === 'context' ? 'active' : ''}`}
@@ -637,10 +682,200 @@ export default function DashboardPage() {
               </button>
             </div>
 
+            {/* TAB: Git Workflow */}
+            {activeTab === 'git' && (
+              <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div
+                  style={{
+                    padding: '16px 20px',
+                    borderRadius: '8px',
+                    background: activeTask?.gitBranchInfo
+                      ? 'rgba(16, 185, 129, 0.1)'
+                      : isVerified
+                      ? 'rgba(56, 189, 248, 0.1)'
+                      : 'var(--bg-panel)',
+                    border: `1px solid ${
+                      activeTask?.gitBranchInfo
+                        ? '#10b981'
+                        : isVerified
+                        ? '#38bdf8'
+                        : 'var(--border-subtle)'
+                    }`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '16px',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, fontSize: '15px' }}>
+                      <GitBranch size={18} color={activeTask?.gitBranchInfo ? '#10b981' : '#38bdf8'} />
+                      <span>SAFE GITHUB WORKFLOW</span>
+                    </div>
+                    <div style={{ fontSize: '12.5px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      {activeTask?.gitBranchInfo
+                        ? 'Repair branch has been created safely. Changes are staged in branch isolation.'
+                        : isVerified
+                        ? 'Repair verified and ready for safe Git branch staging.'
+                        : 'Requires human approval and successful test verification before preparing Git branch.'}
+                    </div>
+                  </div>
+
+                  {isVerified && !activeTask?.gitBranchInfo && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={handlePrepareGitBranch}
+                      disabled={isPreparingGit}
+                    >
+                      {isPreparingGit ? (
+                        <>
+                          <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                          <span>Creating Repair Branch...</span>
+                        </>
+                      ) : (
+                        <>
+                          <GitBranch size={14} />
+                          <span>Prepare Git Changes</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {/* Workflow Checklist Card */}
+                <div
+                  style={{
+                    background: 'var(--bg-input)',
+                    borderRadius: '8px',
+                    border: '1px solid var(--border-subtle)',
+                    padding: '16px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                  }}
+                >
+                  <div style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+                    Workflow Pre-conditions
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
+                    <CheckSquare size={16} color={activeTask?.status === 'completed' || activeTask?.status === 'applied' ? '#10b981' : 'var(--text-muted)'} />
+                    <span style={{ color: activeTask?.status === 'completed' || activeTask?.status === 'applied' ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                      Human Patch Approval & Application
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
+                    <CheckSquare size={16} color={isVerified ? '#10b981' : 'var(--text-muted)'} />
+                    <span style={{ color: isVerified ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                      Automated Verification Suite Passed
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '13px' }}>
+                    <CheckSquare size={16} color={activeTask?.gitBranchInfo ? '#10b981' : 'var(--text-muted)'} />
+                    <span style={{ color: activeTask?.gitBranchInfo ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                      Dedicated Repair Branch Created
+                    </span>
+                  </div>
+                </div>
+
+                {/* Branch Info Display */}
+                {activeTask?.gitBranchInfo && (
+                  <>
+                    <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+                      <div className="stat-card" style={{ padding: '14px' }}>
+                        <div className="stat-header"><span>REPAIR BRANCH</span></div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: '#38bdf8', fontWeight: 600, wordBreak: 'break-all' }}>
+                          {activeTask.gitBranchInfo.branchName}
+                        </div>
+                      </div>
+                      <div className="stat-card" style={{ padding: '14px' }}>
+                        <div className="stat-header"><span>BASE BRANCH</span></div>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '13px', color: 'var(--text-primary)' }}>
+                          {activeTask.gitBranchInfo.baseBranch}
+                        </div>
+                      </div>
+                      <div className="stat-card" style={{ padding: '14px' }}>
+                        <div className="stat-header"><span>STATUS</span></div>
+                        <div style={{ fontSize: '13px', color: '#10b981', fontWeight: 700 }}>
+                          🟢 READY FOR COMMIT
+                        </div>
+                      </div>
+                      <div className="stat-card" style={{ padding: '14px' }}>
+                        <div className="stat-header"><span>MODIFIED FILES</span></div>
+                        <div style={{ fontSize: '13px', color: 'var(--text-primary)', fontWeight: 600 }}>
+                          {activeTask.gitBranchInfo.changedFiles.length} file(s)
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Changed Files List */}
+                    <div className="card-panel">
+                      <div className="card-header">
+                        <div className="card-title">
+                          <FileCode size={16} color="#38bdf8" />
+                          <span>Changed Files in Repair Branch ({activeTask.gitBranchInfo.changedFiles.length})</span>
+                        </div>
+                      </div>
+                      <div className="card-body" style={{ padding: '10px' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {activeTask.gitBranchInfo.changedFiles.map((file, fIdx) => (
+                            <div
+                              key={fIdx}
+                              style={{
+                                padding: '10px 12px',
+                                background: 'var(--bg-input)',
+                                borderRadius: '6px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                fontSize: '13px',
+                                fontFamily: 'var(--font-mono)',
+                              }}
+                            >
+                              <span style={{ color: '#38bdf8' }}>{file.path}</span>
+                              <span className="log-badge info">{file.status.toUpperCase()}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Raw Git Diff */}
+                    {activeTask.gitBranchInfo.rawDiff && (
+                      <div className="diff-container">
+                        <div className="diff-header">
+                          <span>Git Working Tree Diff</span>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                            +{activeTask.gitBranchInfo.diffSummary.insertions} / -{activeTask.gitBranchInfo.diffSummary.deletions}
+                          </span>
+                        </div>
+                        <pre
+                          style={{
+                            padding: '14px',
+                            background: '#050811',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '12px',
+                            color: 'var(--text-primary)',
+                            maxHeight: '320px',
+                            overflowY: 'auto',
+                            whiteSpace: 'pre-wrap',
+                          }}
+                        >
+                          {activeTask.gitBranchInfo.rawDiff}
+                        </pre>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             {/* TAB: Proposed Patch & Human Approval Diff Viewer */}
             {activeTab === 'diff' && (
               <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                {/* Human Approval Action Banner */}
                 {hasPatch && (
                   <div
                     style={{
@@ -743,7 +978,6 @@ export default function DashboardPage() {
                         </div>
                       </div>
 
-                      {/* Reason & Expected effect banner */}
                       <div
                         style={{
                           padding: '10px 16px',
@@ -759,7 +993,6 @@ export default function DashboardPage() {
                         <div><strong>Expected Effect:</strong> <span style={{ color: 'var(--text-secondary)' }}>{change.expectedEffect}</span></div>
                       </div>
 
-                      {/* Unified Diff Gutter View */}
                       <div className="diff-body">
                         {change.diffHunks.map((hunk, hIdx) => (
                           <div
@@ -972,69 +1205,70 @@ export default function DashboardPage() {
                         justifyContent: 'space-between',
                         padding: '16px',
                         borderRadius: '8px',
-                        background: activeTask.verification.overallStatus === 'PASS'
+                        background: isVerified
                           ? 'rgba(16, 185, 129, 0.1)'
                           : 'rgba(244, 63, 94, 0.1)',
                         border: `1px solid ${
-                          activeTask.verification.overallStatus === 'PASS' ? '#10b981' : '#f43f5e'
+                          isVerified ? '#10b981' : '#f43f5e'
                         }`,
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        {activeTask.verification.overallStatus === 'PASS' ? (
+                        {isVerified ? (
                           <CheckCircle2 size={24} color="#10b981" />
                         ) : (
                           <AlertTriangle size={24} color="#f43f5e" />
                         )}
                         <div>
                           <div style={{ fontWeight: 700, fontSize: '15px' }}>
-                            {activeTask.verification.overallStatus === 'PASS'
+                            {isVerified
                               ? 'VERIFICATION PASSED'
                               : 'VERIFICATION CHECKS FAILED'}
                           </div>
                           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            {activeTask.verification.results.length} checks executed
+                            Status: <code>{activeTask.verification.overallStatus}</code> • Commands executed: {activeTask.verification.results?.length || 0}
                           </div>
                         </div>
                       </div>
                       <span
                         className={`log-badge ${
-                          activeTask.verification.overallStatus === 'PASS' ? 'success' : 'error'
+                          isVerified ? 'success' : 'error'
                         }`}
                       >
-                        STATUS: {activeTask.verification.overallStatus}
+                        OVERALL: {activeTask.verification.overallStatus}
                       </span>
                     </div>
 
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                      {activeTask.verification.results.map((result, idx) => (
-                        <div key={idx} className="diff-container" style={{ border: result.status === 'PASS' ? '1px solid #10b981' : '1px solid #f43f5e' }}>
-                          <div className="diff-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              {result.status === 'PASS' ? <CheckCircle2 size={15} color="#10b981" /> : <XCircle size={15} color="#f43f5e" />}
-                              <span style={{ fontWeight: 600 }}>{result.command}</span>
-                            </div>
-                            <span className={`log-badge ${result.status === 'PASS' ? 'success' : 'error'}`}>
-                              EXIT CODE: {result.exitCode}
+                    {/* Results list */}
+                    {activeTask.verification.results?.map((res, rIdx) => (
+                      <div key={rIdx} className="diff-container">
+                        <div className="diff-header">
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span>Command: <code>{res.command}</code></span>
+                            <span className={`log-badge ${res.status === 'PASS' ? 'success' : 'error'}`}>
+                              {res.status}
                             </span>
                           </div>
-                          <pre
-                            style={{
-                              padding: '16px',
-                              background: '#050811',
-                              fontFamily: 'var(--font-mono)',
-                              fontSize: '12px',
-                              color: 'var(--text-primary)',
-                              maxHeight: '300px',
-                              overflowY: 'auto',
-                              whiteSpace: 'pre-wrap',
-                            }}
-                          >
-                            {result.stdout || result.stderr || 'Execution completed without output.'}
-                          </pre>
+                          <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
+                            {res.durationMs}ms
+                          </span>
                         </div>
-                      ))}
-                    </div>
+                        <pre
+                          style={{
+                            padding: '14px',
+                            background: '#050811',
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: '12px',
+                            color: 'var(--text-primary)',
+                            maxHeight: '260px',
+                            overflowY: 'auto',
+                            whiteSpace: 'pre-wrap',
+                          }}
+                        >
+                          {res.stdout || res.stderr || 'Command completed with exit code 0.'}
+                        </pre>
+                      </div>
+                    ))}
                   </>
                 ) : (
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
