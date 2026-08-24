@@ -314,20 +314,27 @@ export class AgentOrchestrator {
       await updateStage(6, 'running');
 
       const structure = await ProjectAnalyzer.analyze(repo.localPath);
-      const testCmd = structure.testCommand || 'npm test';
-      await appendLog('verification', 'info', `Executing verification command: "${testCmd}" in ${repo.localPath}...`);
+      const commands = structure.verificationCommands && structure.verificationCommands.length > 0 
+        ? structure.verificationCommands 
+        : ['npm test'];
+      await appendLog('verification', 'info', `Executing verification commands: ${commands.join(', ')} in ${repo.localPath}...`);
 
       const config = getConfig();
       if (config.autoRunVerification) {
-        const verification = await VerificationRunner.run(repo.localPath, testCmd);
+        const verification = await VerificationRunner.run(repo.localPath, commands);
         task.verification = verification;
 
-        if (verification.passed) {
-          await appendLog('verification', 'success', `✅ Verification passed in ${verification.durationMs}ms (exit code 0).`);
-          await updateStage(6, 'completed', `Verification PASSED in ${verification.durationMs}ms`);
+        if (verification.overallStatus === 'PASS') {
+          const totalDuration = verification.results.reduce((acc, r) => acc + r.durationMs, 0);
+          await appendLog('verification', 'success', `✅ All verifications passed in ${totalDuration}ms.`);
+          await updateStage(6, 'completed', `Verification PASSED in ${totalDuration}ms`);
+        } else if (verification.overallStatus === 'TIMEOUT') {
+          await appendLog('verification', 'error', `⏰ Verification timed out.`);
+          await updateStage(6, 'failed', `Verification TIMEOUT`);
         } else {
-          await appendLog('verification', 'warn', `⚠️ Verification check finished with exit code ${verification.exitCode} (${verification.durationMs}ms).`);
-          await updateStage(6, 'completed', `Verification executed (Exit code ${verification.exitCode})`);
+          const failedCmd = verification.results.find(r => r.status === 'FAIL');
+          await appendLog('verification', 'warn', `⚠️ Verification failed on command: ${failedCmd?.command} (Exit code ${failedCmd?.exitCode}).`);
+          await updateStage(6, 'completed', `Verification FAILED on ${failedCmd?.command}`);
         }
       } else {
         await updateStage(6, 'skipped', 'Automated verification skipped by configuration.');

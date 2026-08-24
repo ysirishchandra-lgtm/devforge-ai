@@ -615,7 +615,7 @@ export default function DashboardPage() {
                 className={`tab-btn ${activeTab === 'verification' ? 'active' : ''}`}
                 onClick={() => setActiveTab('verification')}
               >
-                <ShieldCheck size={15} /> Verification {activeTask?.verification?.passed ? '✅' : ''}
+                <ShieldCheck size={15} /> Verification {activeTask?.verification?.overallStatus === 'PASS' ? '✅' : ''}
               </button>
               <button
                 className={`tab-btn ${activeTab === 'context' ? 'active' : ''}`}
@@ -972,58 +972,68 @@ export default function DashboardPage() {
                         justifyContent: 'space-between',
                         padding: '16px',
                         borderRadius: '8px',
-                        background: activeTask.verification.passed
+                        background: activeTask.verification.overallStatus === 'PASS'
                           ? 'rgba(16, 185, 129, 0.1)'
                           : 'rgba(244, 63, 94, 0.1)',
                         border: `1px solid ${
-                          activeTask.verification.passed ? '#10b981' : '#f43f5e'
+                          activeTask.verification.overallStatus === 'PASS' ? '#10b981' : '#f43f5e'
                         }`,
                       }}
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                        {activeTask.verification.passed ? (
+                        {activeTask.verification.overallStatus === 'PASS' ? (
                           <CheckCircle2 size={24} color="#10b981" />
                         ) : (
                           <AlertTriangle size={24} color="#f43f5e" />
                         )}
                         <div>
                           <div style={{ fontWeight: 700, fontSize: '15px' }}>
-                            {activeTask.verification.passed
+                            {activeTask.verification.overallStatus === 'PASS'
                               ? 'VERIFICATION PASSED'
                               : 'VERIFICATION CHECKS FAILED'}
                           </div>
                           <div style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                            Command: <code>{activeTask.verification.command}</code> • Execution time: {activeTask.verification.durationMs}ms
+                            {activeTask.verification.results.length} checks executed
                           </div>
                         </div>
                       </div>
                       <span
                         className={`log-badge ${
-                          activeTask.verification.passed ? 'success' : 'error'
+                          activeTask.verification.overallStatus === 'PASS' ? 'success' : 'error'
                         }`}
                       >
-                        EXIT CODE: {activeTask.verification.exitCode}
+                        STATUS: {activeTask.verification.overallStatus}
                       </span>
                     </div>
 
-                    <div className="diff-container">
-                      <div className="diff-header">
-                        <span>Test & Build Subprocess Output</span>
-                      </div>
-                      <pre
-                        style={{
-                          padding: '16px',
-                          background: '#050811',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: '12px',
-                          color: 'var(--text-primary)',
-                          maxHeight: '300px',
-                          overflowY: 'auto',
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
-                        {activeTask.verification.stdout || activeTask.verification.stderr || 'Execution completed without output.'}
-                      </pre>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                      {activeTask.verification.results.map((result, idx) => (
+                        <div key={idx} className="diff-container" style={{ border: result.status === 'PASS' ? '1px solid #10b981' : '1px solid #f43f5e' }}>
+                          <div className="diff-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              {result.status === 'PASS' ? <CheckCircle2 size={15} color="#10b981" /> : <XCircle size={15} color="#f43f5e" />}
+                              <span style={{ fontWeight: 600 }}>{result.command}</span>
+                            </div>
+                            <span className={`log-badge ${result.status === 'PASS' ? 'success' : 'error'}`}>
+                              EXIT CODE: {result.exitCode}
+                            </span>
+                          </div>
+                          <pre
+                            style={{
+                              padding: '16px',
+                              background: '#050811',
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: '12px',
+                              color: 'var(--text-primary)',
+                              maxHeight: '300px',
+                              overflowY: 'auto',
+                              whiteSpace: 'pre-wrap',
+                            }}
+                          >
+                            {result.stdout || result.stderr || 'Execution completed without output.'}
+                          </pre>
+                        </div>
+                      ))}
                     </div>
                   </>
                 ) : (

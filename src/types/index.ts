@@ -88,11 +88,13 @@ export interface PatchProposal {
   modifiedFiles?: string[];
 }
 
-export interface VerificationResult {
+export type VerificationStatus = 'PASS' | 'FAIL' | 'NOT_CONFIGURED' | 'TIMEOUT';
+
+export interface CommandVerificationResult {
   command: string;
   workingDir: string;
+  status: VerificationStatus;
   exitCode: number;
-  passed: boolean;
   durationMs: number;
   stdout: string;
   stderr: string;
@@ -102,6 +104,12 @@ export interface VerificationResult {
     failed: number;
     skipped: number;
   };
+  ranAt: string;
+}
+
+export interface VerificationResult {
+  overallStatus: VerificationStatus;
+  results: CommandVerificationResult[];
   ranAt: string;
 }
 
@@ -158,6 +166,7 @@ export interface ProjectStructure {
   totalDirectories: number;
   detectedLanguages: string[];
   detectedFrameworks: string[];
+  verificationCommands: string[];
   testCommand?: string;
   buildCommand?: string;
   entrypoints: string[];

@@ -143,6 +143,7 @@ export class ProjectAnalyzer {
     // Inspect package.json if present
     let testCommand: string | undefined;
     let buildCommand: string | undefined;
+    const verificationCommands: string[] = [];
 
     try {
       const pkgPath = path.join(rootPath, 'package.json');
@@ -166,22 +167,30 @@ export class ProjectAnalyzer {
 
       if (pkgData.scripts?.test && pkgData.scripts.test !== 'echo "Error: no test specified" && exit 1') {
         testCommand = 'npm test';
+        verificationCommands.push('npm test');
+      }
+      if (pkgData.scripts?.lint) {
+        verificationCommands.push('npm run lint');
       }
       if (pkgData.scripts?.build) {
         buildCommand = 'npm run build';
+        verificationCommands.push('npm run build');
       }
     } catch {
       // package.json doesn't exist or is invalid
     }
 
     // Default fallback commands based on detected languages
-    if (!testCommand) {
+    if (verificationCommands.length === 0) {
       if (detectedLanguages.has('Python')) {
         testCommand = 'pytest';
+        verificationCommands.push('pytest');
       } else if (detectedLanguages.has('Rust')) {
         testCommand = 'cargo test';
+        verificationCommands.push('cargo test');
       } else if (detectedLanguages.has('Go')) {
         testCommand = 'go test ./...';
+        verificationCommands.push('go test ./...');
       }
     }
 
@@ -191,6 +200,7 @@ export class ProjectAnalyzer {
       totalDirectories,
       detectedLanguages: Array.from(detectedLanguages),
       detectedFrameworks: Array.from(detectedFrameworks),
+      verificationCommands,
       testCommand,
       buildCommand,
       entrypoints,
