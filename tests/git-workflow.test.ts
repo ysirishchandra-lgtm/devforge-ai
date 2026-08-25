@@ -8,6 +8,17 @@ import { GitService } from '../src/lib/git/git-service';
 import { AppStore } from '../src/lib/storage/store';
 import { TaskRun, Repository } from '../src/types';
 
+// Ensure Git is in PATH on Windows
+if (process.platform === 'win32') {
+  const fsSync = require('fs');
+  const gitPaths = ['C:\\Program Files\\Git\\cmd', 'C:\\Program Files\\Git\\bin'];
+  for (const p of gitPaths) {
+    if (fsSync.existsSync(p) && !process.env.PATH?.includes(p)) {
+      process.env.PATH = `${p};${process.env.PATH}`;
+    }
+  }
+}
+
 describe('Safe GitHub Developer Workflow Tests', () => {
   test('sanitizeBranchName produces predictable and safe branch names', () => {
     // 1. Basic formatting

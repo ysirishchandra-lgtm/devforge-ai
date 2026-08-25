@@ -21,6 +21,17 @@ export interface WorkingTreeStatus {
   unrelatedFiles: string[];
 }
 
+// Ensure Git is in PATH on Windows if installed in standard location
+if (process.platform === 'win32') {
+  const fsSync = require('fs');
+  const gitPaths = ['C:\\Program Files\\Git\\cmd', 'C:\\Program Files\\Git\\bin'];
+  for (const p of gitPaths) {
+    if (fsSync.existsSync(p) && !process.env.PATH?.includes(p)) {
+      process.env.PATH = `${p};${process.env.PATH}`;
+    }
+  }
+}
+
 export class GitService {
   /**
    * Check if git is installed on the host machine and get its version

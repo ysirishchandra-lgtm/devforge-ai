@@ -372,6 +372,93 @@ export default function DashboardPage() {
 
   return (
     <div>
+      {/* Evaluator Hero & Mission Banner */}
+      <div
+        style={{
+          background: 'linear-gradient(135deg, rgba(14, 165, 233, 0.08) 0%, rgba(139, 92, 246, 0.08) 100%)',
+          border: '1px solid rgba(56, 189, 248, 0.2)',
+          borderRadius: '12px',
+          padding: '22px 26px',
+          marginBottom: '20px',
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '16px',
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxWidth: '650px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                background: 'rgba(56, 189, 248, 0.15)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.3)',
+              }}
+            >
+              AUTONOMOUS AGENT ENGINE
+            </span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                padding: '3px 8px',
+                borderRadius: '4px',
+                background: 'rgba(16, 185, 129, 0.15)',
+                color: '#10b981',
+                border: '1px solid rgba(16, 185, 129, 0.3)',
+              }}
+            >
+              AI PROPOSES. DEVELOPER APPROVES.
+            </span>
+          </div>
+          <h1 style={{ fontSize: '20px', fontWeight: 800, color: 'var(--text-primary)', margin: 0 }}>
+            AI-powered engineering agent for safe repository repair.
+          </h1>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.5 }}>
+            DevForge inspects your codebase, diagnoses root causes, generates verified atomic diffs, and prepares clean Git branches — without touching files without your permission.
+          </p>
+        </div>
+
+        {/* 6-Stage Workflow Sequence */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+          {[
+            { label: 'SCAN', color: '#38bdf8' },
+            { label: 'ANALYZE', color: '#818cf8' },
+            { label: 'PLAN', color: '#a78bfa' },
+            { label: 'PATCH', color: '#f59e0b' },
+            { label: 'VERIFY', color: '#10b981' },
+            { label: 'GIT', color: '#38bdf8' },
+          ].map((stage, idx, arr) => (
+            <React.Fragment key={stage.label}>
+              <div
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  background: 'rgba(15, 23, 42, 0.8)',
+                  border: `1px solid ${stage.color}40`,
+                  fontSize: '11.5px',
+                  fontWeight: 700,
+                  color: stage.color,
+                  letterSpacing: '0.04em',
+                }}
+              >
+                {stage.label}
+              </div>
+              {idx < arr.length - 1 && (
+                <ChevronRight size={12} color="var(--text-muted)" style={{ opacity: 0.6 }} />
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+
       {/* Top Stats Banner */}
       <div className="stats-grid">
         <div className="stat-card">
