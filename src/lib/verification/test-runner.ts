@@ -114,6 +114,15 @@ export class VerificationRunner {
 
           // Parse test metrics from stdout if possible
           const testSummary = this.parseTestOutput(stdout + '\n' + stderr);
+          
+          let summary: string | undefined;
+          if (status === 'FAIL') {
+            summary = this.extractFailureSummary(stdout, stderr);
+          } else if (status === 'TIMEOUT') {
+            summary = 'Execution timed out after exceeding limits.';
+          } else if (status === 'NOT_CONFIGURED') {
+            summary = 'Command not found or executable not available in environment.';
+          }
 
           resolve({
             command,
@@ -124,6 +133,7 @@ export class VerificationRunner {
             stdout: stdout.trim(),
             stderr: stderr.trim(),
             testSummary,
+            summary,
             ranAt: new Date().toISOString(),
           });
         }
@@ -133,8 +143,10 @@ export class VerificationRunner {
       proc.on('error', (err: any) => {
         const durationMs = Date.now() - startTime;
         let status: VerificationStatus = 'FAIL';
+        let summary = `Execution failed: ${err.message}`;
         if (err.code === 'ENOENT') {
           status = 'NOT_CONFIGURED';
+          summary = 'Command not found or executable not available in environment.';
         }
         resolve({
           command,
@@ -144,10 +156,44 @@ export class VerificationRunner {
           durationMs,
           stdout: '',
           stderr: `Execution failed: ${err.message}`,
+          summary,
           ranAt: new Date().toISOString(),
         });
       });
     });
+  }
+
+  /**
+   * Extract concise failure summary from stdout/stderr output.
+   */
+  private static extractFailureSummary(stdout: string, stderr: string): string {
+    const output = stdout + '\n' + stderr;
+    const lines = output.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+    // 1. Look for Jest/Vitest specific failure blocks
+    const jestFailureIndex = lines.findIndex(l => l.includes('FAIL') || l.includes('●'));
+    if (jestFailureIndex !== -1) {
+      const summaryBlock = lines.slice(jestFailureIndex, jestFailureIndex + 5).join('\n');
+      return summaryBlock.substring(0, 500);
+    }
+
+    // 2. Look for generic Error: or Exception: lines
+    const errorLine = lines.find(l => l.match(/^(Error|Exception|Failed|✖|x):/i));
+    if (errorLine) {
+      return errorLine.substring(0, 500);
+    }
+
+    // 3. Look at stderr first
+    if (stderr.trim().length > 0) {
+      return stderr.trim().substring(0, 500);
+    }
+
+    // 4. Fallback to last few lines of stdout
+    if (lines.length > 0) {
+      return lines.slice(-3).join('\n').substring(0, 500);
+    }
+
+    return 'Command exited with non-zero code, but no error output was captured.';
   }
 
   /**

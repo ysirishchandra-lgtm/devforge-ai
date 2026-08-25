@@ -384,4 +384,78 @@ export class AgentOrchestrator {
     if (onProgress) onProgress(task);
     return task;
   }
+
+  /**
+   * Run verification again (Retry) safely
+   */
+  static async retryVerification(
+    taskId: string,
+    onProgress?: (task: TaskRun) => void
+  ): Promise<TaskRun> {
+    const task = await AppStore.getTaskById(taskId);
+    if (!task) throw new Error(`Task ${taskId} not found`);
+
+    if (task.status !== 'completed' && task.status !== 'verifying' && task.status !== 'applied') {
+      throw new Error(`Cannot retry verification for task in state: ${task.status}`);
+    }
+
+    const repo = await AppStore.getRepositoryById(task.repositoryId);
+    if (!repo) throw new Error(`Repository ${task.repositoryId} not found`);
+
+    const appendLog = async (
+      stageId: TaskStage['id'] | 'system',
+      level: LogEntry['level'],
+      message: string,
+      details?: Record<string, unknown> | string
+    ) => {
+      const log = this.createLog(stageId, level, message, details);
+      task.logs.push(log);
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+    };
+
+    try {
+      // Archive existing verification
+      if (task.verification) {
+        if (!task.verificationHistory) {
+          task.verificationHistory = [];
+        }
+        task.verificationHistory.unshift(task.verification); // push latest to history
+        // Bound history to 10
+        if (task.verificationHistory.length > 10) {
+          task.verificationHistory = task.verificationHistory.slice(0, 10);
+        }
+      }
+
+      await appendLog('verification', 'info', '🔄 Retrying verification...');
+
+      const structure = await ProjectAnalyzer.analyze(repo.localPath);
+      const commands = structure.verificationCommands && structure.verificationCommands.length > 0 
+        ? structure.verificationCommands 
+        : ['npm test'];
+      
+      const verification = await VerificationRunner.run(repo.localPath, commands);
+      task.verification = verification;
+
+      if (verification.overallStatus === 'PASS') {
+        const totalDuration = verification.results.reduce((acc, r) => acc + r.durationMs, 0);
+        await appendLog('verification', 'success', `✅ All verifications passed in ${totalDuration}ms.`);
+      } else if (verification.overallStatus === 'TIMEOUT') {
+        await appendLog('verification', 'error', `⏰ Verification timed out.`);
+      } else {
+        const failedCmd = verification.results.find(r => r.status === 'FAIL' || r.status === 'NOT_CONFIGURED');
+        await appendLog('verification', 'warn', `⚠️ Verification failed on command: ${failedCmd?.command} (Exit code ${failedCmd?.exitCode}).`);
+      }
+
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+      return task;
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await appendLog('system', 'error', `❌ Retry failed: ${errorMsg}`);
+      await AppStore.saveTask(task);
+      if (onProgress) onProgress(task);
+      return task;
+    }
+  }
 }

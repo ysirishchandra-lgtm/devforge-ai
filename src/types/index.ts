@@ -104,6 +104,7 @@ export interface CommandVerificationResult {
     failed: number;
     skipped: number;
   };
+  summary?: string;
   ranAt: string;
 }
 
@@ -143,6 +144,7 @@ export interface TaskRun {
   plan?: SolutionPlan;
   patchProposal?: PatchProposal;
   verification?: VerificationResult;
+  verificationHistory?: VerificationResult[];
   backupId?: string;
   logs: LogEntry[];
   createdAt: string;

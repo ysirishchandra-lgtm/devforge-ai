@@ -46,6 +46,7 @@ export default function DashboardPage() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [isApproving, setIsApproving] = useState<boolean>(false);
   const [isRejecting, setIsRejecting] = useState<boolean>(false);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'diff' | 'plan' | 'verification' | 'context' | 'terminal' | 'files'>('plan');
 
   const [isCloning, setIsCloning] = useState<boolean>(false);
@@ -239,6 +240,31 @@ export default function DashboardPage() {
       console.error('Agent execution error:', err);
     } finally {
       setIsRunning(false);
+    }
+  }
+
+  async function handleRetryVerification() {
+    if (!activeTask) return;
+
+    setIsRetrying(true);
+    try {
+      const res = await fetch(`/api/tasks/${activeTask.id}/verify`, {
+        method: 'POST',
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setActiveTask(data.task);
+        setRecentTasks((prev) =>
+          prev.map((t) => (t.id === data.task.id ? data.task : t))
+        );
+      } else {
+        alert(`Failed to retry verification.`);
+      }
+    } catch (err) {
+      alert(`Error retrying verification: ${String(err)}`);
+    } finally {
+      setIsRetrying(false);
     }
   }
 
@@ -965,6 +991,17 @@ export default function DashboardPage() {
               <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
                 {activeTask?.verification ? (
                   <>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={handleRetryVerification}
+                        disabled={isRetrying}
+                      >
+                        {isRetrying ? <RefreshCw size={14} style={{ animation: 'spin 1s linear infinite' }} /> : <RefreshCw size={14} />}
+                        {isRetrying ? 'Retrying...' : 'Run Verification Again'}
+                      </button>
+                    </div>
+
                     <div
                       style={{
                         display: 'flex',
@@ -1014,10 +1051,21 @@ export default function DashboardPage() {
                               {result.status === 'PASS' ? <CheckCircle2 size={15} color="#10b981" /> : <XCircle size={15} color="#f43f5e" />}
                               <span style={{ fontWeight: 600 }}>{result.command}</span>
                             </div>
-                            <span className={`log-badge ${result.status === 'PASS' ? 'success' : 'error'}`}>
-                              EXIT CODE: {result.exitCode}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>{(result.durationMs / 1000).toFixed(1)}s</span>
+                              <span className={`log-badge ${result.status === 'PASS' ? 'success' : 'error'}`}>
+                                EXIT CODE: {result.exitCode}
+                              </span>
+                            </div>
                           </div>
+                          
+                          {result.summary && (
+                            <div style={{ padding: '12px 16px', background: 'rgba(244, 63, 94, 0.05)', borderBottom: '1px solid #1e293b' }}>
+                              <strong style={{ color: '#f43f5e', fontSize: '12px', display: 'block', marginBottom: '4px' }}>Failure Summary:</strong>
+                              <pre style={{ margin: 0, color: 'var(--text-primary)', fontSize: '12px', whiteSpace: 'pre-wrap', fontFamily: 'var(--font-mono)' }}>{result.summary}</pre>
+                            </div>
+                          )}
+
                           <pre
                             style={{
                               padding: '16px',
@@ -1035,6 +1083,28 @@ export default function DashboardPage() {
                         </div>
                       ))}
                     </div>
+
+                    {activeTask.verificationHistory && activeTask.verificationHistory.length > 0 && (
+                      <div className="diff-container" style={{ marginTop: '20px' }}>
+                        <div className="diff-header">
+                          <span style={{ fontWeight: 600 }}>Verification History</span>
+                        </div>
+                        <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                          {activeTask.verificationHistory.map((hist, idx) => (
+                            <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px', background: '#1e293b', borderRadius: '4px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>Attempt {activeTask.verificationHistory!.length - idx}</span>
+                                {hist.overallStatus === 'PASS' ? <CheckCircle2 size={14} color="#10b981" /> : <XCircle size={14} color="#f43f5e" />}
+                                <span style={{ fontSize: '13px' }}>{new Date(hist.ranAt).toLocaleString()}</span>
+                              </div>
+                              <span className={`log-badge ${hist.overallStatus === 'PASS' ? 'success' : 'error'}`}>
+                                {hist.overallStatus}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '40px' }}>
