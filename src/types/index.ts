@@ -104,6 +104,7 @@ export interface CommandVerificationResult {
     failed: number;
     skipped: number;
   };
+  summary?: string;
   ranAt: string;
 }
 
@@ -173,6 +174,7 @@ export interface TaskRun {
   patchProposal?: PatchProposal;
   verification?: VerificationResult;
   gitBranchInfo?: GitRepairBranchInfo;
+  verificationHistory?: VerificationResult[];
   backupId?: string;
   logs: LogEntry[];
   createdAt: string;
